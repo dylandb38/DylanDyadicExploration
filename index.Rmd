@@ -1,0 +1,586 @@
+---
+title: "Dyadic Interaction Data Exploration"
+author: "Dylan Douglas-Brown"
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: hide
+date: "2023-09-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      cache = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+
+library(tidyverse)
+library(readxl)
+library(DT)
+library(reactable)
+library(lme4)
+library(dplyr)
+library(car)
+library(data.table)
+library(tibble)
+library(kableExtra)
+library(cowplot)
+library(mgcv)
+#Loading necessary packages
+
+data <- read.csv("TotalDyadicRecording.csv", header=T)
+datalabels <- read_excel("DatasetColumnLabels.xlsx")
+dataEMBO <- read_excel("EPDS_LIVE_Prerecorded_EMBO_1.27.23.xlsx")
+dataParticipants <- data %>% distinct(ID)
+#Importing the datasets
+```
+
+<br>
+<br>
+
+# Introduction 
+
+The following analysis aims to characterize dyadic interactions between caregivers and their infants. This data was collected during live, screen-mediated interactions in the infant eye-tracking lab, during which caregivers were instructed to interact with their children as naturally as possible. 
+
+
+<center>
+![](live_protocol.png)
+</center>
+
+The dataset contains information regarding infant sex, age, session usability, and later diagnostic status, alongside information about caregivers' gender, income, session attendance, and behavior during interactions. This provides ample opportunity to consider how infants' development, caregivers' behavior, and the environment work together to shape dyadic interactions in the first months of life. 
+
+<br>
+<br>
+
+#### **Please, take a moment to explore the raw dataset below.**
+
+<br>
+<br>
+
+<style>
+table.display td { white-space: nowrap; }
+</style>
+```{r, echo = FALSE}
+datatable(data, 
+          extensions = 'FixedColumns',
+          rownames = FALSE,
+          options = list(
+              scrollX = TRUE,
+              fixedColumns = list(leftColumns = 1)))
+```
+
+<br>
+<br>
+
+# Data Cleaning 
+
+
+Before we can dive in, some things need to be tidied. We want to make sure that our values are saved as the proper variable types, account for redundant variables, and check for possible errors in data entry. 
+
+### Correcting Variable Types 
+
+It seems like many of our variables are logical or factor variables; for example, the variable `LeanForward` indicates whether or not caregivers leaned in to the camera during the live interaction. These need to be recoded, as they will not be appropriately interpreted as integers. 
+
+```{r}
+dataClean <- data %>% 
+  mutate(ID = as.factor(ID),
+         CateIncome = as.factor(CateIncome),
+         DxStr = as.factor(DxStr),
+         Sex = as.factor(Sex),
+         NameChange = as.factor(NameChange),
+         Use = as.factor(Use),
+         Gender = as.factor(Gender),
+         GenStr = as.factor(GenStr),
+         Glasses = as.factor(Glasses),
+         Sing = as.factor(Sing),
+         Peekaboo = as.factor(Peekaboo),
+         Movement = as.factor(Movement),
+         LeanForward = as.factor(LeanForward),
+         Greeting = as.factor(Greeting),
+         Pacifier = as.factor(Pacifier),
+         FaceCovered = as.factor(FaceCovered),
+         HandinMouth = as.factor(HandinMouth))
+```
+
+
+```{r, echo = FALSE}
+dataTypesBefore <- setNames(stack(sapply(data, class))[2:1], c('variable', 'class'))
+(DATAbefore <- kbl(dataTypesBefore,
+                  caption = "Dataset Before Cleaning",
+                  col.names = c("Variable",
+                                "Variable Type")) %>% 
+                  kable_paper(full_width = TRUE) %>% 
+                  column_spec(1:2, color = "black", background = "pink") %>% 
+                  scroll_box(width = "400px", height = "250px") %>% 
+                  kable_styling(position = "float_left"))
+
+dataTypesAfter <- setNames(stack(sapply(dataClean, class))[2:1], c('variable', 'class'))
+(DATAafter <- kbl(dataTypesAfter,
+                 caption = "Dataset After Cleaning",
+                  col.names = c("Variable",
+                                "Variable Type")) %>% 
+              kable_paper(full_width = TRUE) %>% 
+              column_spec(1:2, color = "black", background = "lightblue") %>% 
+              scroll_box(width = "400px", height = "250px") %>% 
+              kable_styling(position = "float_right"))
+```
+
+
+### Correcting Redundant Strings
+
+It seems like our variable `SeshNum` repeats information already provided in the ID column, and then adds the session number at the end of the string, after a period. Let's fix this variable, so it is not redundant. 
+
+```{r}
+dataClean <- dataClean %>% 
+  mutate(SessionNumber1 = str_replace(SeshNum, ".*(?=[0-9])",""),
+  SessionNumber = as.factor(str_replace(SessionNumber1, "\\*", ""))) 
+
+dataSessionNumbers <- dataClean %>% 
+  select(ID, SeshNum, SessionNumber) 
+
+kable(dataSessionNumbers,
+      title = "Cleaning Session Numbers",
+      col.names = c("ID",
+                    "Original SeshNum",
+                    "Cleaned Session Number")) %>% 
+      kable_paper(full_width = TRUE) %>% 
+      column_spec(1:3, color = "black", background = "darkseagreen") %>% 
+      scroll_box(width = "600px", height = "350px")
+```
+
+<br> 
+
+Nice! Now our `SeshNum` variable is represented categorically, with individuals ranging from 1-7 total sessions attended.
+
+<br>
+
+### Creating a Total Attendance Variable
+
+Let's create a variable that reflects the total number of sessions each participant attended.
+```{r}
+dataClean <- dataClean %>% 
+  group_by(ID) %>% 
+  mutate(TotalAttendance = max(as.integer(SessionNumber)),
+         TotalAttendance = factor(TotalAttendance, levels = c("1","2","3","4","5","6","7")))
+
+dataTotalAttendance <- dataClean %>% 
+  distinct(ID, TotalAttendance)
+
+kable(dataTotalAttendance,
+      title = "Creating Total Attendance Variable",
+      col.names = c("ID",
+                    "Total Sessions Attended")) %>% 
+      kable_paper(full_width = TRUE) %>% 
+      column_spec(1:2, color = "black", background = "darkseagreen") %>% 
+      scroll_box(width = "600px", height = "350px")
+```
+<br>
+Awesome! Now we can see each participant's total attendance. This will be great for further analyses. 
+
+
+<br>
+
+# Basic Visualizations {.tabset}
+
+Now that we have cleaned up our raw dataset, let's take a peek at some of the general characteristics of our sample. 
+
+## Infant Sex and Diagnostic Outcome
+```{r fig.align="center", echo = FALSE,fig.width = 12, fig.height = 7}
+dataClean %>% 
+  group_by(ID) %>% 
+  ggplot(mapping = aes(x = DxStr)) +
+    geom_bar(aes(fill = Sex),
+           color = "black",
+           position = "fill") +
+    labs(x = "Diagnostic Outcome",
+       y = "Frequency",
+       title = "Infant Sex within Each Diagnostic Outcome Group",
+       fill = "Infant Sex") +
+    scale_x_discrete(labels = c(asd = "ASD",
+                              elnASD = "EL-ASD",
+                              td = "TD")) +
+    theme_minimal() +
+    theme(text = element_text(size = 15))
+```
+
+The above barplot displays the distribution of sex across each diagnostic outcome group within the sample. It seems like we see a more even split in our typically-developing group, while more male infants are later included in ASD and EL-ASD groups.
+
+<br>
+<br>
+<br>
+
+## Data Viability Over Time
+```{r fig.align="center", echo = FALSE,fig.width = 12, fig.height = 7}
+dataClean %>% 
+  filter(!is.na(Use)) %>% 
+  ggplot(aes(x = SessionNumber)) + 
+  geom_bar(aes(fill = Use),
+               color = "black",
+           position = "fill") +
+  labs(title = "Data Viability across Sessions",
+       x = "Session Number",
+       y = "Frequency",
+       fill = "Was Session Usable?") +
+  theme(text = element_text(size = 15)) +
+  theme_minimal()
+```
+
+Getting an idea of patterns to data usability as sessions progress. It seems like we see more sleepy babies in first 2-3 months :,). 
+
+<br>
+<br>
+<br>
+
+## Session Attendance and Diagnostic Outcome
+```{r fig.align="center", echo = FALSE,fig.width = 12, fig.height = 7}
+dataClean %>% 
+  filter(!is.na(TotalAttendance)) %>% 
+  ggplot(aes(x = TotalAttendance)) +
+  geom_bar(aes(fill = DxStr),
+           color = "black",
+           position = "fill") +
+  labs(title = "Session Attendance across Diagnostic Groups",
+       x = "Total Sessions Attended",
+       y = "Frequency",
+       fill = str_wrap("Diagnostic Group")) +
+  theme(text = element_text(size = 15)) +
+  scale_fill_hue(labels = c("ASD", "EL-ASD", "TDX")) +
+  theme_minimal()
+```
+
+Looking at session attendance by diagnostic category.
+
+
+<br>
+<br>
+<br>
+
+# Patterns in Caregivers' Behavior 
+
+Let's see how caregivers' behavior in interactions changes as infants get older. 
+
+
+
+## Peekaboo {.tabset}
+
+### Whole Sample 
+```{r fig.width = 10, fig.height = 4}
+dataClean %>% 
+  filter(!is.na(Age),
+         !is.na(Peekaboo)) %>% 
+  ggplot(aes(x = Age)) +
+    geom_bar(aes(fill = Peekaboo),
+             position = "fill",
+             color = "black") +
+  labs(title = "Caregivers' Peekaboo Behaviors across Sessions",
+       x = "Infant Age",
+       y = "Frequency",
+       fill = "Peekaboo?") +
+  scale_fill_discrete(labels = c("No", "Yes")) +
+  scale_x_binned(n.breaks = 15) +
+  theme_minimal()
+```
+
+Across diagnostic groups, caregivers' peekaboo behavior seems to increase over time.
+
+<br>
+<br>
+
+
+### Diagnostic Group Comparison 
+```{r fig.width = 10, fig.height = 6}
+dataClean %>% 
+  filter(!is.na(Peekaboo)) %>% 
+  ggplot(aes(x = Age)) +
+  geom_bar(aes(fill = Peekaboo),
+           position = "fill",
+           color = "black") +
+  facet_wrap(~DxStr,
+             ncol = 1) +
+   labs(title = "Caregivers' Peekaboo Behaviors across Sessions and Diagnostic Groups",
+       x = "Age",
+       y = "Frequency",
+       fill = "Peekaboo?") +
+  scale_fill_discrete(labels = c("No", "Yes")) +
+  scale_x_binned(n.breaks = 15) +
+  theme_minimal()
+```
+
+Peekaboo behaviors across diagnostic groups, over the first 7 months.
+
+<br>
+<br>
+<br>
+
+### GAM Visualizations
+```{r}
+dataClean %>% 
+  filter(!is.na(Peekaboo)) %>% 
+  mutate(Peekaboo = as.numeric(Peekaboo)-1) %>% 
+  ggplot(aes(x = Age,
+             y = Peekaboo)) +
+  geom_smooth(aes(group = DxStr,
+                  color = DxStr),
+    method = 'gam', 
+    method.args = list(family = 'binomial'),
+    se = FALSE) +
+  theme_minimal() +
+  labs(x = "Age",
+       y = "Probability that Caregiver Plays Peekaboo",
+       title = "Infant Age as a Predictor of Caregiver Peekaboo") +
+  scale_color_hue(labels = c("ASD", "EL-ASD", "TDX"))
+```
+
+
+
+## Greeting {.tabset}
+
+### Whole Sample
+```{r fig.width = 10, fig.height = 6}
+dataClean %>% 
+  filter(!is.na(Greeting)) %>% 
+  ggplot(aes(x = Age)) +
+  geom_bar(aes(fill = Greeting),
+           position = "fill",
+           color = "black") +
+   labs(title = "Caregivers' Greeting Behaviors across Sessions",
+       x = "Age",
+       y = "Frequency",
+       fill = "Greeting?") +
+  scale_fill_discrete(labels = c("No", "Yes")) +
+  scale_x_binned(n.breaks =15) +
+  theme_minimal()
+```
+
+Across diagnostic groups, caregivers' greeting behavior seems to increase over time. *wow*
+
+<br>
+<br>
+
+
+### Diagnostic Group Comparison
+```{r fig.width = 10, fig.height = 6}
+dataClean %>% 
+  filter(!is.na(Greeting)) %>% 
+  ggplot(aes(x = Age)) +
+  geom_bar(aes(fill = Greeting),
+           position = "fill",
+           color = "black") +
+  facet_wrap(~DxStr,
+             ncol = 1) +
+    labs(title = "Caregivers' Greeting Behaviors across Sessions and Diagnostic Groups",
+       x = "Age",
+       y = "Frequency",
+       fill = "Greeting?") +
+  scale_fill_discrete(labels = c("No", "Yes")) +
+  scale_x_binned(n.breaks = 15) +
+  theme_minimal()
+```
+
+Greeting behaviors across diagnostic groups, displayed over the first 7 months. *Any thoughts about the dip at 4 months for our ASD kids? Developmental significance?*
+
+<br>
+<br>
+<br>
+
+### GAM Visualizations
+```{r}
+dataClean %>% 
+  filter(!is.na(Greeting)) %>% 
+  mutate(Greeting = as.numeric(Greeting)-1) %>% 
+  ggplot(aes(x = Age,
+             y = Greeting)) +
+  geom_smooth(aes(group = DxStr,
+                  color = DxStr),
+    method = 'gam', 
+    method.args = list(family = 'binomial'),
+    se = FALSE) +
+  theme_minimal() +
+  labs(x = "Age",
+       y = "Probability that Caregiver Greets Infant",
+       title = "Infant Age as a Predictor of Caregiver Greeting") +
+  scale_color_hue(labels = c("ASD", "EL-ASD", "TDX"))
+```
+
+## Singing {.tabset}
+
+### Whole Sample
+```{r fig.width = 10, fig.height = 6}
+dataClean %>% 
+  filter(!is.na(Sing)) %>% 
+  ggplot(aes(x = Age)) +
+  geom_bar(aes(fill = Sing),
+           position = "fill",
+           color = "black") +
+    labs(title = "Caregivers' Singing Behaviors across Sessions",
+       x = "Age",
+       y = "Frequency",
+       fill = "Singing?") +
+  scale_fill_discrete(labels = c("No", "Yes")) +
+  scale_x_binned(n.breaks = 15) +
+  theme_minimal()
+```
+
+Across diagnostic groups, caregivers' singing behavior seems to slightly increase. 
+
+<br>
+<br>
+
+### Diagnostic Group Comparison
+```{r fig.width = 10, fig.height = 6}
+dataClean %>% 
+  filter(!is.na(Sing)) %>% 
+  ggplot(aes(x = Age)) +
+  geom_bar(aes(fill = Sing),
+           position = "fill",
+           color = "black") +
+  facet_wrap(~DxStr,
+             ncol = 1) +
+  labs(title = "Caregivers' Singing Behaviors across Sessions and Diagnostic Groups",
+       x = "Age",
+       y = "Frequency",
+       fill = "Singing?") +
+  scale_fill_discrete(labels = c("No", "Yes")) +
+  scale_x_binned(n.breaks = 15) +
+  theme_minimal()
+```
+
+Singing behaviors across diagnostic groups, over the first 7 months of life.
+
+<br>
+<br>
+<br>
+
+### GAM Visualizations
+```{r}
+dataClean %>% 
+  filter(!is.na(Sing)) %>% 
+  mutate(Sing = as.numeric(Sing)-1) %>% 
+  ggplot(aes(x = Age,
+             y = Sing)) +
+  geom_smooth(aes(group = DxStr,
+                  color = DxStr),
+    method = 'gam', 
+    method.args = list(family = 'binomial'),
+    se = FALSE) +
+  theme_minimal() +
+  labs(x = "Age",
+       y = "Probability that Caregiver Sings",
+       title = "Infant Age as a Predictor of Caregiver Singing") +
+  scale_color_hue(labels = c("ASD", "EL-ASD", "TDX"))
+```
+
+
+
+# Context of Caregivers' Income 
+
+
+### Diagnostic Status by Income Group
+
+```{r fig.width = 10, fig.height = 6}
+dataClean %>% 
+  filter(!is.na(CateIncome)) %>% 
+  ggplot(aes(x = DxStr)) + 
+  geom_bar(aes(fill = CateIncome),
+           color = "black",
+           position = "fill") +
+  labs(title = "Diagnoses across Categorical Income Groups",
+       x = "Diagnostic Group",
+       y = "Frequency",
+       fill = "Categorical Income Group") +
+  theme(text = element_text(size = 12)) +
+  theme_minimal()
+```
+
+Getting an idea of general income categories of the different diagnostic groups we serve, 5 being the highest income. Seeing expected pattern of more wealth/education in TD group who voluntarily sought out research opportunities.
+
+
+
+<br>
+
+### Session Attendance by Income Group
+
+```{r fig.width = 12, fig.height = 7}
+dataClean %>% 
+  left_join(dataTotalAttendance) %>% 
+  filter(!is.na(CateIncome)) %>% 
+  ggplot(aes(x = CateIncome)) +
+  geom_bar(aes(fill = TotalAttendance),
+           position = "fill",
+           color = "black") +
+  labs(title = "Total Number of Sessions Attended by Income Category",
+       x = "Income Category",
+       y = "Frequency",
+       fill = "Total Sessions Attended") +
+  theme(text = element_text(size = 17)) +
+  theme_minimal()
+```
+
+Looking at total number of sessions attended by income category, seeing highest median attendance in wealthiest income group. 
+
+<br>
+<br>
+
+
+### Behaviors by Income Group {.tabset}
+
+#### Singing behavior by Income Group.
+```{r}
+dataClean %>% 
+  filter(!is.na(Sing)) %>% 
+  mutate(Sing = as.numeric(Sing)-1) %>% 
+  ggplot(aes(x = ContIncome,
+             y = Sing)) +
+  geom_smooth(method = 'gam', method.args = list(family = 'binomial')) +
+  theme_minimal() +
+  labs(x = "Income",
+       y = "Probability that Caregiver Sings",
+       title = "Income as a Predictor of Caregiver Singing")
+```
+
+<br>
+<br>
+
+#### Peekaboo behavior by Income Group.
+```{r}
+dataClean %>% 
+  filter(!is.na(Peekaboo)) %>% 
+  mutate(Peekaboo = as.numeric(Peekaboo)-1) %>% 
+  ggplot(aes(x = ContIncome,
+             y = Peekaboo)) +
+  geom_smooth(method = 'gam', method.args = list(family = 'binomial')) +
+  theme_minimal() +
+  labs(x = "Income",
+       y = "Probability that Caregiver Plays Peekaboo",
+       title = "Income as a Predictor of Caregiver Peekaboo")
+```
+
+<br>
+<br>
+
+#### Greeting behavior by income group.
+```{r}
+dataClean %>% 
+  filter(!is.na(Greeting)) %>% 
+  mutate(Greeting = as.numeric(Greeting)-1) %>% 
+  ggplot(aes(x = ContIncome,
+             y = Greeting)) +
+  geom_smooth(method = 'gam', method.args = list(family = 'binomial')) +
+  theme_minimal() +
+  labs(x = "Income",
+       y = "Probability that Caregiver Greets Baby",
+       title = "Income as a Predictor of Caregiver Greeting Behavior")
+```
+
+
+
+
+
+
+
+
+
+
+
+
